@@ -7,7 +7,8 @@
 
 #define d 5
 #define N 20
-#define ni 1
+#define ni 10
+#define NP N/ni
 double inner_prod(double a[],double b[])
 {
     int i;
@@ -45,18 +46,19 @@ double inner_prod_mat_vec(double Ai[][d],double xi[],int j)
 }
 void Gradient(double Ai[][d],double xi[],double g[],double z[],double ui[],double rho)
 {
+    
+    //Compute gradient.
     int m,j,t;
     for(m=0;m<d;m++)
     {
-        //Compute gradient.
-                g[m] = rho*(xi[m]-z[m]+ui[m]);
-                for(j=0;j<ni;j++)
-                     g[m] -= Ai[j][m]/(1+exp(inner_prod_mat_vec(Ai,xi,j)));
+        g[m] = rho*(xi[m]-z[m]+ui[m]);
+        for(j=0;j<ni;j++)
+             g[m] -= Ai[j][m]/((1+exp(inner_prod_mat_vec(Ai,xi,j)))*N);
     }               
 }
 double logistic_loss(double u)
 {
-    return log(1+exp(-u));
+    return log(1+exp(-u))/N;
 }
 double Objective_i(double Ai[][d],double xi[],double z[], double ui[],double rho)
 {
@@ -81,11 +83,11 @@ double SSE(double a[],int n)
        sum+=pow(a[i],2);
     return sqrt(sum);
 }
-void GD(double xi[],double Ai[][d],double rho,double z[],double ui[])
+void GD(double xi[],double Ai[][d],double rho,double z[],double ui[],int rank)
 {
     double g[d];
     int m,j,t=1;
-    double epsilon=0.1;
+    double epsilon=0.01;
     double sqgrad = 10;
     double gamma;
     double obj;
@@ -96,8 +98,9 @@ void GD(double xi[],double Ai[][d],double rho,double z[],double ui[])
         for(m=0;m<d;m++)
             xi[m]-=gamma*g[m];
         obj = Objective_i(Ai,xi, z ,ui, rho);
+        if(rank==2)
+         printf("OBJ %f\t%f \n",obj,sqgrad);
         sqgrad = SSE(g,d);
-        printf("Obj is: %f %0.11f\n",obj,sqgrad); 
         t++;
     }
 }
@@ -129,21 +132,74 @@ void initialize(double A[][d])
              A[i][j] = pi[j]*qi;
     }         
 }
+
+void add_arr(double a[],double b[],double c[])
+{
+    int i;
+    for(i=0;i<d;i++)
+        c[i] = a[i]+b[i];
+}
+void prox_op(double z[],double z_sum[],double par){
+    int i;
+    for(i=0;i<d-1;i++)
+    {
+       if(z_sum[i]>par)
+           z[i] = z_sum[i]-par;
+       else if(z_sum[i]<-par)
+           z[i] = z_sum[i]+par;
+       else
+           z[i]=0;
+    }
+    z[d-1] = z_sum[d-1];
+}
+void scale(double a[],double alpha){
+    int i;
+    for(i=0;i<d;i++)
+        a[i] = a[i]/alpha;
+}
+void adapt_ui(double ui[d], double xi[d], double z[d])
+{
+     int i;
+     for(i=0;i<d;i++)
+        ui[i]+=(xi[i]-z[i]);
+}
+void cp_arr(double z[],double z_prev[]){
+    int i;
+    for(i=0;i<d;i++)
+        z_prev[i]=z[i];
+}
+double  resid(double xi[],double z[]){
+    int i;
+    double sum=0;
+    for(i=0;i<d;i++)
+        sum+=pow(xi[i]-z[i],2);
+    return sum;
+}    
+double l1_norm(double a[]){
+    int i;
+    double l1=0;
+    for(i=0;i<d;i++)
+        l1+=abs(a[i]);
+    return l1;
+}
+
 int main(int argc, char *argv[])
 {
     double (*A) [d];
     A = malloc(sizeof(*A) * N);
-    double rho = 1, lambda =1; 
+    double rho = 1, lambda =0.5; 
     double Ai[ni][d];
     double z[d]={0};
     double ui[d]={0};
     double xi[d]={0};
-
-
+    double x_bar[d];
+    double u_bar[d];
+    double z_sum[d];
+    double z_prev[d];
     double g[d];
-
-
-    int sendcount, recvcount, source, root,rank,numtasks;
+    double ri=10,ri_2=10,OBJ_i;    
+    int i;
+    int sendcount, recvcount, root,rank,numtasks;
 
 
     initialize(A);
@@ -153,19 +209,47 @@ int main(int argc, char *argv[])
    MPI_Init(&argc,&argv);
    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
    MPI_Comm_size(MPI_COMM_WORLD, &numtasks); 
-   if(numtasks*ni==N)
+   if(numtasks==NP)
    { 
        sendcount = ni*d;
        recvcount = ni*d;
-       source =1;
        MPI_Scatter(A,sendcount,MPI_DOUBLE,Ai,recvcount,
-           MPI_DOUBLE,source,MPI_COMM_WORLD);
-      
-       if(rank==3)
-           GD(xi,Ai,rho,z,ui);
-
+           MPI_DOUBLE,1,MPI_COMM_WORLD);
+     for(i=0;i<100;i++){
+       GD(xi,Ai,rho,z,ui,rank);
+       ri = resid(xi,z);
+     //  printf("Rank %d and xi: %f %f %f %f %f\n",rank,xi[0],xi[1],xi[2],xi[3],xi[4]);
+       OBJ_i = Objective_i(Ai,xi, z, ui,rho);
+       MPI_Reduce (xi,x_bar,d,MPI_DOUBLE,MPI_SUM,0,MPI_COMM_WORLD);
+       MPI_Reduce (ui,u_bar,d,MPI_DOUBLE,MPI_SUM,0,MPI_COMM_WORLD);
+       MPI_Reduce (&ri,&ri,1,MPI_DOUBLE,MPI_SUM,0,MPI_COMM_WORLD);
+       MPI_Reduce (&OBJ_i,&OBJ_i,1,MPI_DOUBLE,MPI_SUM,0,MPI_COMM_WORLD);
+       if(rank==0)
+       {
+       //    printf("Rank %d and xi: %f %f %f %f %f\n",rank,x_bar[0],x_bar[1],x_bar[2],x_bar[3],x_bar[4]);
+           cp_arr(z,z_prev);
+           scale(x_bar,(double) NP);
+           scale(u_bar,(double) NP);
+       //    printf("Rank %d and x bar: %f %f %f %f %f\n",rank,x_bar[0],x_bar[1],x_bar[2],x_bar[3],x_bar[4]);
+       //    printf("Rank %d and u bar: %f %f %f %f %f\n",rank,u_bar[0],u_bar[1],u_bar[2],u_bar[3],u_bar[4]);
+           ri = sqrt(ri);
+           add_arr(x_bar,u_bar,z_sum);
+       //    printf("Rank %d and z sum: %f %f %f %f %f\n",rank,z_sum[0],z_sum[1],z_sum[2],z_sum[3],z_sum[4]);
+           prox_op(z,z_sum,lambda/(rho*NP)); 
+      //     printf("Rank %d and z sum: %f %f %f %f %f\n",rank,z[0],z[1],z[2],z[3],z[4]);
+           ri_2 = rho*sqrt(NP)*sqrt(resid(z,z_prev));
+           printf("residual 1: %f, residual 2: %f,%f\n",ri,ri_2,OBJ_i+lambda*l1_norm(z));
+       }
+       MPI_Barrier(MPI_COMM_WORLD);
+       MPI_Bcast ( z, d, MPI_DOUBLE,0, MPI_COMM_WORLD );
+    //   printf("Rank %d and z sum: %f %f %f %f %f\n",rank,z[0],z[1],z[2],z[3],z[4]);
+       MPI_Bcast ( &ri, 1, MPI_DOUBLE,0, MPI_COMM_WORLD );
+       MPI_Bcast ( &ri_2, 1, MPI_DOUBLE,0, MPI_COMM_WORLD );
+       adapt_ui( ui,  xi,  z);
+    //   printf("Rank %d and u after update: %f %f %f %f %f\n",rank,ui[0],ui[1],ui[2],ui[3],ui[4]);
+     }
    }
    else
-       printf("You shoud specify %d processes.\n",N/ni);
+       printf("You shoud specify %d processes.\n",NP);
    MPI_Finalize();
 }
