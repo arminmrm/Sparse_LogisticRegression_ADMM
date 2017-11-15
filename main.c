@@ -2,13 +2,21 @@
 #include <stdlib.h>
 #include "mpi.h"
 #include <math.h>
+#include <time.h>
 
 
-
-#define d 5
-#define N 20
-#define ni 10
+#define d 29
+#define N 100
+#define ni 20
 #define NP N/ni
+
+double CLOCK(){
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return(t.tv_sec*1000)+(t.tv_nsec*1e-6);
+}
+
+
 double inner_prod(double a[],double b[])
 {
     int i;
@@ -17,6 +25,8 @@ double inner_prod(double a[],double b[])
         sum+= a[i]*b[i];
     return sum;
 }
+
+
 int sgn(double x)
 {
     if(x>=0)
@@ -24,6 +34,8 @@ int sgn(double x)
     else
        return -1;
 }
+
+
 void print_mat(double A[][d])
 {
     int i,j;
@@ -36,6 +48,8 @@ void print_mat(double A[][d])
                printf("%f\n",A[i][j]);
          }
 }
+
+
 double inner_prod_mat_vec(double Ai[][d],double xi[],int j)
 {
     int k;
@@ -44,6 +58,8 @@ double inner_prod_mat_vec(double Ai[][d],double xi[],int j)
         sum+=Ai[j][k]*xi[k];
     return sum;
 }
+
+
 void Gradient(double Ai[][d],double xi[],double g[],double z[],double ui[],double rho)
 {
     
@@ -56,10 +72,14 @@ void Gradient(double Ai[][d],double xi[],double g[],double z[],double ui[],doubl
              g[m] -= Ai[j][m]/((1+exp(inner_prod_mat_vec(Ai,xi,j)))*N);
     }               
 }
+
+
 double logistic_loss(double u)
 {
     return log(1+exp(-u))/N;
 }
+
+
 double Objective_i(double Ai[][d],double xi[],double z[], double ui[],double rho)
 {
     int j,m;
@@ -75,6 +95,8 @@ double Objective_i(double Ai[][d],double xi[],double z[], double ui[],double rho
     return sum;
 }
 
+
+
 double SSE(double a[],int n)
 {
     int i;
@@ -83,6 +105,8 @@ double SSE(double a[],int n)
        sum+=pow(a[i],2);
     return sqrt(sum);
 }
+
+
 void GD(double xi[],double Ai[][d],double rho,double z[],double ui[],int rank)
 {
     double g[d];
@@ -91,19 +115,21 @@ void GD(double xi[],double Ai[][d],double rho,double z[],double ui[],int rank)
     double sqgrad = 10;
     double gamma;
     double obj;
-    while(sqgrad>epsilon && t<100)
+    while(sqgrad>epsilon && t<1000)
     {
         Gradient(Ai,xi,g,z,ui,rho);
         gamma = (double)1/(t+2);
         for(m=0;m<d;m++)
             xi[m]-=gamma*g[m];
         obj = Objective_i(Ai,xi, z ,ui, rho);
-        if(rank==2)
+        if(rank==NP)
          printf("OBJ %f\t%f \n",obj,sqgrad);
         sqgrad = SSE(g,d);
         t++;
     }
 }
+
+
 void initialize(double A[][d])
 {
     srand(1993);
@@ -118,7 +144,7 @@ void initialize(double A[][d])
     {
         pr = (double)rand()/RAND_MAX;
         if(pr<0.5)
-            x[j] = ((double)rand()-RAND_MAX/2)/RAND_MAX;
+            x[j] = 100*((double)rand()-RAND_MAX/2)/RAND_MAX;
       //  printf("%f\n",x[j]);
             
     }
@@ -132,6 +158,24 @@ void initialize(double A[][d])
              A[i][j] = pi[j]*qi;
     }         
 }
+
+void read_data(double A[][d],char *fname){
+    int i,j;
+    FILE *ptr_file;
+    float val;
+    ptr_file =fopen(fname, "r");
+    for(i=0;i<N;i++)
+        for(j=0;j<d;j++)
+        {
+            fscanf(ptr_file,"%f",&val);
+            if(j==d-2)
+                A[i][j]=val/1000;
+            else
+                A[i][j]=val;
+        }
+    fclose(ptr_file);
+}
+
 
 void add_arr(double a[],double b[],double c[])
 {
@@ -182,16 +226,23 @@ double l1_norm(double a[]){
         l1+=abs(a[i]);
     return l1;
 }
-
+void write_var(double z[d],const char *file){
+    FILE *ptr_file;
+    int i;
+    ptr_file =fopen(file, "w");
+    for(i=0;i<d;i++)
+        fprintf(ptr_file,"%f\n", z[i]);
+    fclose(ptr_file);
+}
 int main(int argc, char *argv[])
 {
     double (*A) [d];
     A = malloc(sizeof(*A) * N);
-    double rho = 1, lambda =0.5; 
-    double Ai[ni][d];
+    double rho = 1, lambda =0.05; 
     double z[d]={0};
     double ui[d]={0};
     double xi[d]={0};
+    double Ai[ni][d];
     double x_bar[d];
     double u_bar[d];
     double z_sum[d];
@@ -200,9 +251,12 @@ int main(int argc, char *argv[])
     double ri=10,ri_2=10,OBJ_i;    
     int i;
     int sendcount, recvcount, root,rank,numtasks;
+    double tstart,tend;
+    //initialize(A);
+    read_data(A,"dataset_c");
+    printf("%f\n",A[0][d-2]);
 
-
-    initialize(A);
+    tstart = CLOCK();
 //    print_mat(A); 
 
    
@@ -213,12 +267,13 @@ int main(int argc, char *argv[])
    { 
        sendcount = ni*d;
        recvcount = ni*d;
+     
        MPI_Scatter(A,sendcount,MPI_DOUBLE,Ai,recvcount,
            MPI_DOUBLE,1,MPI_COMM_WORLD);
-     for(i=0;i<100;i++){
+     for(i=0;i<400;i++){
        GD(xi,Ai,rho,z,ui,rank);
        ri = resid(xi,z);
-     //  printf("Rank %d and xi: %f %f %f %f %f\n",rank,xi[0],xi[1],xi[2],xi[3],xi[4]);
+//      printf("Rank %d and xi: %f %f %f %f %f\n",rank,xi[0],xi[1],xi[2],xi[3],xi[4]);
        OBJ_i = Objective_i(Ai,xi, z, ui,rho);
        MPI_Reduce (xi,x_bar,d,MPI_DOUBLE,MPI_SUM,0,MPI_COMM_WORLD);
        MPI_Reduce (ui,u_bar,d,MPI_DOUBLE,MPI_SUM,0,MPI_COMM_WORLD);
@@ -234,7 +289,7 @@ int main(int argc, char *argv[])
        //    printf("Rank %d and u bar: %f %f %f %f %f\n",rank,u_bar[0],u_bar[1],u_bar[2],u_bar[3],u_bar[4]);
            ri = sqrt(ri);
            add_arr(x_bar,u_bar,z_sum);
-       //    printf("Rank %d and z sum: %f %f %f %f %f\n",rank,z_sum[0],z_sum[1],z_sum[2],z_sum[3],z_sum[4]);
+      //     printf("Rank %d and z sum: %f %f %f %f %f\n",rank,z_sum[0],z_sum[1],z_sum[2],z_sum[3],z_sum[4]);
            prox_op(z,z_sum,lambda/(rho*NP)); 
       //     printf("Rank %d and z sum: %f %f %f %f %f\n",rank,z[0],z[1],z[2],z[3],z[4]);
            ri_2 = rho*sqrt(NP)*sqrt(resid(z,z_prev));
@@ -242,14 +297,22 @@ int main(int argc, char *argv[])
        }
        MPI_Barrier(MPI_COMM_WORLD);
        MPI_Bcast ( z, d, MPI_DOUBLE,0, MPI_COMM_WORLD );
-    //   printf("Rank %d and z sum: %f %f %f %f %f\n",rank,z[0],z[1],z[2],z[3],z[4]);
+      // printf("Rank %d and z sum: %f %f %f %f %f\n",rank,z[0],z[1],z[2],z[3],z[4]);
        MPI_Bcast ( &ri, 1, MPI_DOUBLE,0, MPI_COMM_WORLD );
        MPI_Bcast ( &ri_2, 1, MPI_DOUBLE,0, MPI_COMM_WORLD );
        adapt_ui( ui,  xi,  z);
-    //   printf("Rank %d and u after update: %f %f %f %f %f\n",rank,ui[0],ui[1],ui[2],ui[3],ui[4]);
+//       printf("Rank %d and u after update: %f %f %f %f %f\n",rank,ui[0],ui[1],ui[2],ui[3],ui[4]);
+    //
      }
    }
    else
        printf("You shoud specify %d processes.\n",NP);
    MPI_Finalize();
+   tend = CLOCK();
+   //printf("Time taken: %f\n",tend-tstart);
+   if(rank==0){
+       write_var(z,argv[1]);
+       printf("Time taken: %f\n",tend-tstart);
+   }
+    return 0;
 }
