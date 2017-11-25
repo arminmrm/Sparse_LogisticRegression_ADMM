@@ -5,9 +5,10 @@
 #include <time.h>
 
 
-#define d 29
+#define d 5
 #define N 100
-#define ni 20
+#define ni 50
+
 #define NP N/ni
 
 double CLOCK(){
@@ -137,6 +138,9 @@ void initialize(double A[][d])
     int qi;
     double x[d]={0.0};
     double pr, pi[d];
+    FILE *ptr_f;
+    
+    ptr_f=fopen("synthetic_dataset", "w");
     pi[d-1] = 0;
 
 
@@ -155,8 +159,13 @@ void initialize(double A[][d])
          qi = sgn(inner_prod(pi, x));
          A[i][d-1] = -qi;
          for(j=0;j<d-1;j++)
+         {
              A[i][j] = pi[j]*qi;
+             fprintf(ptr_f,"%f\t",A[i][j]);
+         }
+         fprintf(ptr_f,"%f\n",A[i][d-1]);
     }         
+    fclose(ptr_f);
 }
 
 void read_data(double A[][d],char *fname){
@@ -238,7 +247,7 @@ int main(int argc, char *argv[])
 {
     double (*A) [d];
     A = malloc(sizeof(*A) * N);
-    double rho = 1, lambda =0.05; 
+    double rho = 5, lambda =0.05; 
     double z[d]={0};
     double ui[d]={0};
     double xi[d]={0};
@@ -252,13 +261,14 @@ int main(int argc, char *argv[])
     int i;
     int sendcount, recvcount, root,rank,numtasks;
     double tstart,tend;
-    //initialize(A);
-    read_data(A,"dataset_c");
-    printf("%f\n",A[0][d-2]);
+    initialize(A);
+   // read_data(A,"dataset2_c");
+    //printf("%f\n",A[0][d-2]);
 
     tstart = CLOCK();
 //    print_mat(A); 
 
+   FILE *tfile;   
    
    MPI_Init(&argc,&argv);
    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -270,6 +280,8 @@ int main(int argc, char *argv[])
      
        MPI_Scatter(A,sendcount,MPI_DOUBLE,Ai,recvcount,
            MPI_DOUBLE,1,MPI_COMM_WORLD);
+     if(rank==0)
+         tfile = fopen(argv[3],"a");
      for(i=0;i<400;i++){
        GD(xi,Ai,rho,z,ui,rank);
        ri = resid(xi,z);
@@ -293,7 +305,7 @@ int main(int argc, char *argv[])
            prox_op(z,z_sum,lambda/(rho*NP)); 
       //     printf("Rank %d and z sum: %f %f %f %f %f\n",rank,z[0],z[1],z[2],z[3],z[4]);
            ri_2 = rho*sqrt(NP)*sqrt(resid(z,z_prev));
-           printf("residual 1: %f, residual 2: %f,%f\n",ri,ri_2,OBJ_i+lambda*l1_norm(z));
+           fprintf(tfile, "%f\t%f\t%f\n",ri,ri_2,OBJ_i+lambda*l1_norm(z));
        }
        MPI_Barrier(MPI_COMM_WORLD);
        MPI_Bcast ( z, d, MPI_DOUBLE,0, MPI_COMM_WORLD );
@@ -313,6 +325,12 @@ int main(int argc, char *argv[])
    if(rank==0){
        write_var(z,argv[1]);
        printf("Time taken: %f\n",tend-tstart);
+   
+       FILE *fp;
+       fp = fopen(argv[2],"w");
+       fprintf(fp,"%f\n", tend-tstart);
+       fclose(fp);
+       fclose(tfile);
    }
     return 0;
 }
